@@ -1,1 +1,1 @@
-# GPUComputing-FinalProject
+# GPUComputing-Homework2
