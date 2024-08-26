@@ -1,5 +1,5 @@
 # Compiler to use
-CC = g++
+CC = nvcc
 # Compiler flags
 CFLAGS = -std=c++14 -g
 INCLUDE = -Iinclude
@@ -9,7 +9,7 @@ LIB_DIR := lib
 TARGET_DIR := bin
 
 # Name of your main cpp file
-MAIN = Main.cpp
+MAIN = Main.cu
 # Name of the executable
 EXECUTABLE = $(TARGET_DIR)/GPUComp_FP
 # Name of the library

@@ -1,150 +1,206 @@
 #include <cstdlib>
 #include <math.h>
 #include <iostream>
+#include <mmio.h>
 #include <algorithm>
 
-#define MATRIX_TYPE float 
-#define MAX_RANDOM_VALUE 100
-#define TILE_SIZE 32
 #define ITERATIONS 100
 
 using namespace std;
 
-// <--- CUDA KERNELS --->
-
-/**
- * Kernel that copies a matrix into another, used as baseline
- *
- * @param matrix - The matrix to read data from
- * @param transposedMatrix - The matrix to store data to
- * @param matrixSize - The size of both matrices
- */
-__global__ void matrixCopy(const MATRIX_TYPE* matrix, MATRIX_TYPE* outputMatrix, int matrixSize) {
-
-    int column = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-
-    int index = matrixSize * row + column;
-
-    if ( index < matrixSize * matrixSize ) {
-
-        outputMatrix[index] = matrix[index];
-    }
-}
-
-/**
- * Kernel that computes the out-of-place naive matrix transposition, used as a baseline
- *
- * @param matrix - The matrix to transpose
- * @param transposedMatrix - The matrix to store the transposed values
- * @param matrixSize - The size of both matrices
- */
-__global__ void naiveTranspose(const MATRIX_TYPE* matrix, MATRIX_TYPE* transposedMatrix, int matrixSize) {
-
-    int column = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-
-    int index = matrixSize * row + column;
-    int transposedIndex = matrixSize * column + row;
-
-    if ( index < matrixSize * matrixSize && transposedIndex < matrixSize * matrixSize ) {
-
-        transposedMatrix[transposedIndex] = matrix[index];
-    }
-}
-
-/**
-  * Kernel that computes the out-of-place matrix transposition, using memory coalescing to
-  * enhance performance
-  *
-  * @param matrix - The matrix to transpose
-  * @param transposedMatrix - The matrix to store the transposed values
-  * @param matrixSize - The size of both matrices
-  */
-__global__ void coalescedTiledTranspose(const MATRIX_TYPE* matrix, MATRIX_TYPE* transposedMatrix, int matrixSize) {
-	
-    __shared__ MATRIX_TYPE tile[TILE_SIZE * TILE_SIZE];
-
-    int index = matrixSize * (blockIdx.y * blockDim.y + threadIdx.y) + (blockIdx.x * blockDim.x + threadIdx.x); 
-    int transposedIndex =  matrixSize * (blockIdx.x * blockDim.x + threadIdx.y) + (blockIdx.y * blockDim.y + threadIdx.x); 
-
-    // Copying values from global memory to the tile in the shared memory
-    if ( index < matrixSize * matrixSize ) {
-		tile[threadIdx.y * TILE_SIZE + threadIdx.x] = matrix[index];	
-    }
-
-    __syncthreads();
-
-    if ( transposedIndex < matrixSize * matrixSize) {
-        transposedMatrix[transposedIndex] = tile[threadIdx.x * TILE_SIZE + threadIdx.y];
-    }
-}
-
-
-/**
-  * Kernel that computes the out-of-place matrix transposition, using memory coalescing and
-  * padding the shared memory array to prevent bank conflict and enhance performance
-  *
-  * @param matrix - The matrix to transpose
-  * @param transposedMatrix - The matrix to store the transposed values
-  * @param matrixSize - The size of both matrices
-  */
-__global__ void coalescedPaddedTiledTranspose(const MATRIX_TYPE* matrix, MATRIX_TYPE* transposedMatrix, int matrixSize) {
-	
-
-    // Padding the array to prevent bank conflict
-    __shared__ MATRIX_TYPE paddedTile[(TILE_SIZE + 1) * TILE_SIZE];
-
-    int index = matrixSize * (blockIdx.y * blockDim.y + threadIdx.y) + (blockIdx.x * blockDim.x + threadIdx.x); 
-    int transposedIndex =  matrixSize * (blockIdx.x * blockDim.x + threadIdx.y) + (blockIdx.y * blockDim.y + threadIdx.x); 
-
-    // Copying values from global memory to the tile in the shared memory
-    if ( index < matrixSize * matrixSize ) {
-		paddedTile[threadIdx.x + (threadIdx.y * (TILE_SIZE + 1))] = matrix[index];	
-    }
-
-    __syncthreads();
-
-    if ( transposedIndex < matrixSize * matrixSize) {
-        transposedMatrix[transposedIndex] = paddedTile[threadIdx.y + (threadIdx.x * (TILE_SIZE + 1))];
-    }
-}
+// <== CUDA KERNELS ==>
 
 /**
   * Simple kernel used to awake the GPU before the computations
   */
 __global__ void awakeKernel() { }
 
-// <--- END CUDA KERNELS --->
+/* <=== MATRIX CONVERSION FUNCTIONS ===>*/
 
 /**
- * Initialize the matrix with random values
- * @param matrix - The matrix to initialize
- * @param matrixSize - The size of the matrix
+ * Utility function used to import a matrix from a Matrix Market file
+ * This function requires the matrix to be highly sparse (more than 75% of zero-elements), with real values and squares.
+ *
+ * @param filename - Path to the Matrix Market file
+ * @param matrixSize - Variable to store the size of the matrix, the matrix is square
+ * @param nonZero - Variable to store the number of non-zero elements
+ * @param rowIdx - Pointer to the array that will store the row indexes of the non-zero elements
+ * @param colIdx - Pointer to the array that will store the column indexes of the non-zero elements
+ * @param values - Pointer to the array that will store the values of the non-zero elements
+ *
+ * @return 0 if the operation was successful, 1 otherwise
  */
-void initMatrix(MATRIX_TYPE* matrix, int matrixSize) {
-    srand(time(NULL));
-    for (int i = 0; i < matrixSize * matrixSize; i++) {
-        matrix[i] = (MATRIX_TYPE) rand();
+int readMatrixMarketFile(
+        const char *filename,
+        int *matrixSize,
+        int *nonZero,
+        int **rowIdx,
+        int **colIdx,
+        double **values
+) {
+
+    FILE *fd;
+    MM_typecode matrixCode;
+    int N;
+
+    // Check if the file exists and is a valid Matrix Market file
+    if ((fd = fopen(filename, "r")) == NULL || mm_read_banner(fd, &matrixCode) != 0) {
+        cout << "File: " << filename << " could not be opened, or is not a valid Matrix Market file" << endl;
+        return 1;
+    }
+
+    // Check the matrix is sparse and composed of real numbers
+    if (mm_is_sparse(matrixCode) && mm_is_real(matrixCode)) {
+
+        // If sparse read the size of the matrix and number of non-zero elements
+        if (mm_read_mtx_crd_size(fd, matrixSize, &N, nonZero) != 0) {
+            cout << "Could not read matrix size" << endl;
+            return 1;
+        }
+    } else {
+        cout << "The application only supports highly sparse matrices with values type real" << endl;
+        return 1;
+    }
+
+    // Check the matrix is a square matrix
+    if (*matrixSize != N) {
+        cout << "The application only supports square matrices" << endl;
+        return 1;
+    }
+
+    // Allocate memory for the row and column indexes
+    *rowIdx = (int *) malloc(*nonZero * sizeof(int));
+    *colIdx = (int *) malloc(*nonZero * sizeof(int));
+    *values = (double *) malloc(*nonZero * sizeof(double));
+
+    // Read the row and column indexes
+    for (int i = 0; i < *nonZero; i++) {
+        fscanf(fd, "%d %d %lg\n", &(*rowIdx)[i], &(*colIdx)[i], &(*values)[i]);
+        // Adjust from 1-based to 0-based
+        (*rowIdx)[i]--;
+        (*colIdx)[i]--;
+    }
+
+    fclose(fd);
+
+    cout << "Matrix Market file read successfully" << endl;
+    return 0;
+}
+
+/**
+ * Utility function used to convert a matrix from the COO format to the CSR format
+ *
+ * @param _rowIdx - Pointer to the array that stores the row indexes of the non-zero elements (COO format)
+ * @param _colIdx - Pointer to the array that stores the column indexes of the non-zero elements (COO format)
+ * @param _values - Pointer to the array that stores the values of the non-zero elements (COO format)
+ * @param matrixSize - Size of the matrix, the matrix is square
+ * @param nonZero - Number of non-zero elements
+ * @param rowPtrs - Pointer to the array that will store the offset value of each row for the colIdx array
+ * @param colIdx - Pointer to the array that will store the column indexes of the non-zero elements
+ * @param values - Pointer to the array that will store the values of the non-zero elements
+ */
+void convertMatrixToCSR(
+        const int *_rowIdx,
+        const int *_colIdx,
+        const double *_values,
+        const int matrixSize,
+        const int nonZero,
+        int **rowPtrs,
+        int **colIdx,
+        double **values
+) {
+
+    // Allocate memory for the row pointers and column index, rowPtrs is of size matrix size
+    *rowPtrs = (int *) malloc((matrixSize) * sizeof(int));
+    *colIdx = (int *) malloc(nonZero * sizeof(int));
+    *values = (double *) malloc(nonZero * sizeof(double));
+
+    // The offset for the first row is always zero
+    (*rowPtrs)[0] = 0;
+
+    // Cycle every row pointer
+    for ( int rowPtr = 0; rowPtr < matrixSize; rowPtr++) {
+
+        // This offset is the value stored in the rowPtrs array
+        int offset = (*rowPtrs)[rowPtr];
+
+        // Cycle every non-zero element
+        for ( int i = 0; i < nonZero; i++) {
+
+            // If the row matches the rowPtr then it is the same row
+            // so increment the offset and save the column index in the new column index array
+            if (_rowIdx[i] == rowPtr) {
+                (*colIdx)[offset] = _colIdx[i];
+                (*values)[offset] = _values[i];
+                offset++;
+            }
+        }
+
+        // Save the offset in the next element of rowPtrs, first element offset is always zero
+        (*rowPtrs)[rowPtr + 1] = offset;
     }
 }
 
-/**
-  * Print a matrix
-  * @param matrix - The matrix to print
-  * @param matrixSize - The size of the matrix
-  */
-void printMatrix(const MATRIX_TYPE* matrix, int matrixSize) {
-    
-	cout << "Matrix of " << matrixSize << " X " << matrixSize << " elements" << endl;
-	for (int i = 0; i < matrixSize * matrixSize; i++) {
-		
-		if (i % matrixSize == 0) { cout << endl;} 
-		cout << matrix[i] << " ";
-	}
 
-	cout << endl;
+/**
+ * Utility function used to convert a matrix from the CSR format to the padded CSR format
+ * This format create a virtual matrix of matrixSize rows and padding columns,
+ * where padding is the highest number of non-zero elements in a single row of the matrix
+ * The colIdx contains the indexes of the column that store non-zero elements, with -1 used as a padding value,
+ * similarly the values array uses 0 as a padding value.
+ *
+ * @param _rowPtrs - Pointer to the array that will store the offset value of each row for the colIdx array
+ * @param _colIdx -  Pointer to the array that stores the column indexes of the non-zero elements
+ * @param _values - Pointer to the array that stores the values of the non-zero elements
+ * @param matrixSize - Size of the matrix, the matrix is square
+ * @param padding - Variable to store the padding value, the highest number of elements in a row
+ * @param colIdx - Pointer to the array that will store the column indexes of the non-zero elements
+ * @param values - Pointer to the array that will store the values of the non-zero elements
+ */
+void convertCSRToPaddedCSR(
+        const int *_rowPtrs,
+        const int *_colIdx,
+        const double *_values,
+        const int matrixSize,
+        int *padding,
+        int **colIdx,
+        double **values
+) {
+
+    // First find the highest number of elements in a row and use it to calculate the padding
+    *padding = 0;
+    for (int i = 1; i < matrixSize; i++) {
+        if (_rowPtrs[i] - _rowPtrs[i - 1] > (*padding)) {
+            (*padding) = _rowPtrs[i] - _rowPtrs[i - 1];
+        }
+    }
+
+    // Allocate the memory for the new column index array
+    *colIdx = (int *) malloc(matrixSize * (*padding) * sizeof(int));
+    *values = (double *) malloc(matrixSize * (*padding) * sizeof(double));
+
+    // Cycle every row of the matrix
+    for (int i = 0; i < matrixSize; i++) {
+        // Cycle every column of the matrix
+        for ( int j = 0; j < (*padding); j ++ ) {
+
+            // Calculate the current element by offsetting the base pointer with the index of the current column
+            int elementPtr = _rowPtrs[i] + j;
+
+            // If the element pointer is larger than the next offset in _rowPtrs,
+            // it means there are no more elements in the current row, so start filling with -1 values
+            if (elementPtr < _rowPtrs[i + 1]) {
+                (*colIdx)[i * (*padding) + j] = _colIdx[elementPtr];
+                (*values)[i * (*padding) + j] = _values[elementPtr];
+            } else {
+                (*colIdx)[i * (*padding) + j] = -1;
+                (*values)[i * (*padding) + j] = 0;
+            }
+        }
+    }
 }
+
+// <== UTILITY FUNCTIONS ==>
 
 /**
   * Process the execution time of each kernel and return the effective bandwidth
@@ -171,13 +227,10 @@ float processExecTimes(float* execTimes, int matrixSize) {
 
 int main(int argc, char** argv) {
 
-    // Check the size of the matrix is passed as an argument
-    if (argc < 2) {
-        cout
-        << "You must specify the size of the matrix as an argument"
-        << endl;
-
-        return -1;
+    // Check that the path to the Matrix Market file was provided as a command line argument
+    if (argc != 2) {
+        cout << "You must specify the path to the Matrix Market file" << endl;
+        return 1;
     }
     
     // Calculate the size of the matrix and initialize it
