@@ -68,10 +68,10 @@ int readMatrixMarketFile(
         return 1;
     }
 
-    // Allocate memory for the row and column indexes
-    *rowIdx = (int *) malloc(*nonZero * sizeof(int));
-    *colIdx = (int *) malloc(*nonZero * sizeof(int));
-    *values = (double *) malloc(*nonZero * sizeof(double));
+    // Allocate memory for the row and column indexes and values
+    cudaMallocManaged(rowIdx, *nonZero * sizeof(int));
+    cudaMallocManaged(colIdx, *nonZero * sizeof(int));
+    cudaMallocManaged(values, *nonZero * sizeof(double));
 
     // Read the row and column indexes
     for (int i = 0; i < *nonZero; i++) {
@@ -110,10 +110,11 @@ void convertMatrixToCSR(
         double **values
 ) {
 
-    // Allocate memory for the row pointers and column index, rowPtrs is of size matrix size
-    *rowPtrs = (int *) malloc((matrixSize) * sizeof(int));
-    *colIdx = (int *) malloc(nonZero * sizeof(int));
-    *values = (double *) malloc(nonZero * sizeof(double));
+    // Allocate memory for the row pointers, column index and values.
+    // rowPtrs is of size matrix size
+    cudaMallocManaged(rowPtrs, matrixSize * sizeof(int));
+    cudaMallocManaged(colIdx, nonZero * sizeof(int));
+    cudaMallocManaged(values, nonZero * sizeof(double));
 
     // The offset for the first row is always zero
     (*rowPtrs)[0] = 0;
@@ -175,9 +176,9 @@ void convertCSRToPaddedCSR(
         }
     }
 
-    // Allocate the memory for the new column index array
-    *colIdx = (int *) malloc(matrixSize * (*padding) * sizeof(int));
-    *values = (double *) malloc(matrixSize * (*padding) * sizeof(double));
+    // Allocate the memory for the new column index array and values array
+    cudaMallocManaged(colIdx, matrixSize * (*padding) * sizeof(int));
+    cudaMallocManaged(values, matrixSize * (*padding) * sizeof(double));
 
     // Cycle every row of the matrix
     for (int i = 0; i < matrixSize; i++) {
@@ -232,195 +233,65 @@ int main(int argc, char** argv) {
         cout << "You must specify the path to the Matrix Market file" << endl;
         return 1;
     }
-    
-    // Calculate the size of the matrix and initialize it
-    int MATRIX_SIZE = 1 << atoi(argv[1]);
 
-    // The matrix will be divided in GRID_SIZE X GRID_SIZE tiles
-    int GRID_SIZE = MATRIX_SIZE / TILE_SIZE;
-    if ( GRID_SIZE < 1 ) { GRID_SIZE = 1; } 
+    // Read the matrix from the Matrix Market file
+    int matrixSize, nonZero;
+    int *rowIdx, *colIdx;
+    double *values;
 
-    // Dimension of the tile matrix, each tile is a block
-    dim3 GRID_DIMENSION(GRID_SIZE, GRID_SIZE);
+    if (readMatrixMarketFile(argv[1], &matrixSize, &nonZero, &rowIdx, &colIdx, &values) != 0) {
+        cout << "Something went wrong while reading the Matrix Market file" << endl;
+        return 1;
+    }
 
-    // Dimension of a single tile or block
-    dim3 BLOCK_DIMENSION(TILE_SIZE, TILE_SIZE);
+    cout << "Matrix of size: " << matrixSize << " with " << nonZero << " non-zero elements" << endl;
 
-    awakeKernel<<<GRID_DIMENSION, BLOCK_DIMENSION>>>();
+    cout << "Matrix in COO format" << endl;
+    for (int i = 0; i < nonZero; i++) {
+        cout << "Row: " << rowIdx[i] << " Col: " << colIdx[i] << " Vals: " << values[i] << endl;
+    }
 
-
-    // Create and initialize matrices
-    MATRIX_TYPE *matrixA, *matrixB;
-
-    cudaMallocManaged(&matrixA, MATRIX_SIZE * MATRIX_SIZE * sizeof(MATRIX_TYPE));
-    cudaMallocManaged(&matrixB, MATRIX_SIZE * MATRIX_SIZE * sizeof(MATRIX_TYPE));
-    
-    initMatrix(matrixA, MATRIX_SIZE);
-
-    // <--- MATRIX COPY --->
-
-    cout << "Computing copy of matrix of size: "  
-	    << MATRIX_SIZE << " X " << MATRIX_SIZE << " and a grid of size " 
-	    << GRID_SIZE << " X " << GRID_SIZE << endl;
-  
-    // Crate cuda event to register execution time
-    cudaEvent_t startCopy, stopCopy;
-    
-    cudaEventCreate(&startCopy);
-    cudaEventCreate(&stopCopy);
-    
-    // Array to store execution times
-    float copyExecTimes[100];
+    // Convert the matrix from COO to CSR format
+    int *CSRrowPtrs, *CSRcolIdx;
+    double *CSRvalues;
+    convertMatrixToCSR(rowIdx, colIdx, values, matrixSize, nonZero, &CSRrowPtrs, &CSRcolIdx, &CSRvalues);
 
 
-    for(int i = 0; i < ITERATIONS; i++) {
-    
-        float elapsedTime = 0.0f;
+    cout << "Matrix in CSR format" << endl;
+    for (int i = 1; i < matrixSize; i++) {
+        for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
+            cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
+        }
+    }
 
-        cudaEventRecord(startCopy);
-       
-        matrixCopy<<<GRID_DIMENSION, BLOCK_DIMENSION>>>(matrixA, matrixB, MATRIX_SIZE);
-        
-        cudaEventRecord(stopCopy);
-        cudaEventSynchronize(stopCopy);
+    // Convert the matrix from CSR to padded CSR format
+    int *paddedColIdx;
+    double *paddedValues;
+    int padding;
+    convertCSRToPaddedCSR(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, &padding, &paddedColIdx, &paddedValues);
 
-        cudaEventElapsedTime(&elapsedTime, startCopy, stopCopy);
-        copyExecTimes[i] = elapsedTime;
-    } 
-
-    cudaDeviceSynchronize();
-    
-    cout << "MATRIX COPY EFFECTIVE BANDWITH (GB/s): " << processExecTimes(copyExecTimes, MATRIX_SIZE) << endl; 
-
-    // Free resources
-    cudaEventDestroy(startCopy);
-    cudaEventDestroy(stopCopy);
-
-    // <--- END MATRIX COPY --->
+    cout << "Matrix in padded CSR format" << endl;
+    for ( int i = 0; i < matrixSize; i++ ) {
+        for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
+            cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
+        }
+    }
 
 
-    // <--- NAIVE MATRIX TRANPOSITION --->
+    // Free the memory used by the COO matrix
+    cudaFree(rowIdx);
+    cudaFree(colIdx);
+    cudaFree(values);
 
-    cout << "Computing naive matrix transposition of a matrix of size "  
-	    << MATRIX_SIZE << " X " << MATRIX_SIZE << " and a grid of size " 
-	    << GRID_SIZE << " X " << GRID_SIZE << endl;
-  
-    // Crate cuda event to register execution time
-    cudaEvent_t startNaive, stopNaive;
-    
-    cudaEventCreate(&startNaive);
-    cudaEventCreate(&stopNaive);
+    // Free the memory used by the CSR matrix
+    cudaFree(CSRrowPtrs);
+    cudaFree(CSRcolIdx);
+    cudaFree(CSRvalues);
 
-    // Array to store execution times
-    float naiveExecTimes[100];
+    // Free the memory used by the padded CSR matrix
+    cudaFree(paddedColIdx);
+    cudaFree(paddedValues);
 
-    for(int i = 0; i < ITERATIONS; i++) {
-    
-        float elapsedTime = 0.0f;
-
-        cudaEventRecord(startNaive);
-       
-        naiveTranspose<<<GRID_DIMENSION, BLOCK_DIMENSION>>>(matrixA, matrixB, MATRIX_SIZE);
-        
-        cudaEventRecord(stopNaive);
-        cudaEventSynchronize(stopNaive);
-
-        cudaEventElapsedTime(&elapsedTime, startNaive, stopNaive);
-        naiveExecTimes[i] = elapsedTime;
-    } 
-
-    cudaDeviceSynchronize();
-    
-    cout << "NAIVE MATRIX TRANSPOSITION EFFECTIVE BANDWIDTH (GB/s): " << processExecTimes(naiveExecTimes, MATRIX_SIZE) << endl; 
-
-    // Free resources
-    cudaEventDestroy(startNaive);
-    cudaEventDestroy(stopNaive);
-
-    // <--- END NAIVE MATRIX TRANSPOSITION --->
-
-
-    // <--- COALESCED MATRIX TRANPOSITION --->
-
-    cout << "Computing the coalesce matrix transposition of a matrix of size "  
-	    << MATRIX_SIZE << " X " << MATRIX_SIZE << " and a grid of size " 
-	    << GRID_SIZE << " X " << GRID_SIZE << endl;
-  
-    // Crate cuda event to register execution time
-    cudaEvent_t startCoalesced, stopCoalesced;
-    
-    cudaEventCreate(&startCoalesced);
-    cudaEventCreate(&stopCoalesced);
-    
-    // Array to store execution times
-    float coalescedExecTimes[100];
-
-    for(int i = 0; i < ITERATIONS; i++) {
-    
-        float elapsedTime = 0.0f;
-
-        cudaEventRecord(startCoalesced);
-       
-        coalescedTiledTranspose<<<GRID_DIMENSION, BLOCK_DIMENSION>>>(matrixA, matrixB, MATRIX_SIZE);
-        
-        cudaEventRecord(stopCoalesced);
-        cudaEventSynchronize(stopCoalesced);
-	
-	cudaEventElapsedTime(&elapsedTime, startCoalesced, stopCoalesced);
-        coalescedExecTimes[i] = elapsedTime;
-    } 
- 
-    cudaDeviceSynchronize();
- 
-    cout << "COALESCED MATRIX TRANSPOSITION EFFECTIVE BANDWIDTH (GB/s): " << processExecTimes(coalescedExecTimes, MATRIX_SIZE) << endl; 
-
-    // Free resources
-    cudaEventDestroy(startCoalesced);
-    cudaEventDestroy(stopCoalesced);
-
-    // <--- END COALESCED MATRIX TRANSPOSITION --->
-
-    // <--- COALESCED PADDED MATRIX TRANPOSITION --->
-    cout << "Computing the padded coalesce matrix transposition of a matrix of size "  
-	    << MATRIX_SIZE << " X " << MATRIX_SIZE << " and a grid of size " 
-	    << GRID_SIZE << " X " << GRID_SIZE << endl;
-  
-    // Crate cuda event to register execution time
-    cudaEvent_t startCoalescedPadded, stopCoalescedPadded;
-    
-    cudaEventCreate(&startCoalescedPadded);
-    cudaEventCreate(&stopCoalescedPadded);
-    
-    // Array to store execution times
-    float coalescedPaddedExecTimes[100];
-
-    for(int i = 0; i < ITERATIONS; i++) {
-    
-        float elapsedTime = 0.0f;
-
-        cudaEventRecord(startCoalescedPadded);
-       
-        coalescedPaddedTiledTranspose<<<GRID_DIMENSION, BLOCK_DIMENSION>>>(matrixA, matrixB, MATRIX_SIZE);
-        
-        cudaEventRecord(stopCoalescedPadded);
-        cudaEventSynchronize(stopCoalescedPadded);
-
-        cudaEventElapsedTime(&elapsedTime, startCoalescedPadded, stopCoalescedPadded);
-        coalescedPaddedExecTimes[i] = elapsedTime;
-    } 
-
-    cudaDeviceSynchronize();
-    
-    cout << "PADDED COALESCED MATRIX TRANSPOSITION EFFECTIVE BANDWIDTH (GB/s): " << processExecTimes(coalescedPaddedExecTimes, MATRIX_SIZE) << endl; 
-    // Free resources
-    cudaEventDestroy(startCoalescedPadded);
-    cudaEventDestroy(stopCoalescedPadded);
-
-    // <--- END COALESCED PADDED MATRIX TRANSPOSITION --->
-    
-    // Free arrays memory
-    cudaFree(matrixA);
-    cudaFree(matrixB);
 
     return 0;
 }
