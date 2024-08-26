@@ -209,22 +209,22 @@ void convertCSRToPaddedCSR(
   * @param matrixSize - The size of the matrix
   * @return effectiveBandwidth - The effective bandwidth, calculated excluding the 5 highest and lowest times
   */
-float processExecTimes(float* execTimes, int matrixSize) {
-
-    // Sort the array
-    sort(execTimes, execTimes + ITERATIONS);
-
-    // Exclude the 5 highest and 5 lowest values from the average
-    float average = 0.0f;
-    
-    for (int i = 5; i < ITERATIONS - 5; i++) {
-        average += execTimes[i];
-    }
-    average = average / (ITERATIONS - 10);
-    
-    float effectiveBandwidth = (2 * matrixSize * matrixSize * sizeof(MATRIX_TYPE) / 1024) / (average * 1000);
-    return effectiveBandwidth;
-}
+//float processExecTimes(float* execTimes, int matrixSize) {
+//
+//    // Sort the array
+//    sort(execTimes, execTimes + ITERATIONS);
+//
+//    // Exclude the 5 highest and 5 lowest values from the average
+//    float average = 0.0f;
+//    
+//    for (int i = 5; i < ITERATIONS - 5; i++) {
+//        average += execTimes[i];
+//    }
+//    average = average / (ITERATIONS - 10);
+//    
+//    float effectiveBandwidth = (2 * matrixSize * matrixSize * sizeof(MATRIX_TYPE) / 1024) / (average * 1000);
+//    return effectiveBandwidth;
+//}
 
 int main(int argc, char** argv) {
 
@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
 
 
     cout << "Matrix in CSR format" << endl;
-    for (int i = 1; i < matrixSize; i++) {
+    for (int i = 0; i < matrixSize; i++) {
         for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
             cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
         }

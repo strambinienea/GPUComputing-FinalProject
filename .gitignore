@@ -6,6 +6,6 @@
 *.fatbin
 bin
 build
-error
-output
-sbatch_script.sh
+errors
+outputs
+cuda_sbatch.sh
