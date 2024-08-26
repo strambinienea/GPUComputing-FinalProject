@@ -3,6 +3,7 @@ CC = nvcc
 # Compiler flags
 CFLAGS = -std=c++14 -g
 INCLUDE = -Iinclude
+CUSPARSE = -lcusparse
 
 BUILD_DIR := build
 LIB_DIR := lib
@@ -22,7 +23,7 @@ debug: all
 
 $(EXECUTABLE): src/${MAIN} $(MMIO_OBJ)
 	@mkdir -p $(@D)
-	$(CC) $^ -o $@ $(INCLUDE) $(CFLAGS)
+	$(CC) $^ -o $@ $(INCLUDE) $(CUSPARSE) $(CFLAGS)
 
 
 $(MMIO_OBJ): $(LIB_DIR)/mmio.cpp

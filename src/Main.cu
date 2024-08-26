@@ -3,6 +3,7 @@
 #include <iostream>
 #include <mmio.h>
 #include <algorithm>
+#include <cusparse.h>
 
 #define ITERATIONS 100
 
@@ -216,12 +217,12 @@ void convertCSRToPaddedCSR(
 //
 //    // Exclude the 5 highest and 5 lowest values from the average
 //    float average = 0.0f;
-//    
+//
 //    for (int i = 5; i < ITERATIONS - 5; i++) {
 //        average += execTimes[i];
 //    }
 //    average = average / (ITERATIONS - 10);
-//    
+//
 //    float effectiveBandwidth = (2 * matrixSize * matrixSize * sizeof(MATRIX_TYPE) / 1024) / (average * 1000);
 //    return effectiveBandwidth;
 //}
@@ -233,6 +234,10 @@ int main(int argc, char** argv) {
         cout << "You must specify the path to the Matrix Market file" << endl;
         return 1;
     }
+
+    // <== SETUP CODE ==>
+    // In this part of the code the matrix will be read from the .mtx file and converted in the COO, CSR and padded
+    // CSR formats. The matrix will later be used to perform the transposition using the GPU.
 
     // Read the matrix from the Matrix Market file
     int matrixSize, nonZero;
@@ -246,23 +251,26 @@ int main(int argc, char** argv) {
 
     cout << "Matrix of size: " << matrixSize << " with " << nonZero << " non-zero elements" << endl;
 
+#ifdef DEBUG
     cout << "Matrix in COO format" << endl;
     for (int i = 0; i < nonZero; i++) {
         cout << "Row: " << rowIdx[i] << " Col: " << colIdx[i] << " Vals: " << values[i] << endl;
     }
+#endif
 
     // Convert the matrix from COO to CSR format
     int *CSRrowPtrs, *CSRcolIdx;
     double *CSRvalues;
     convertMatrixToCSR(rowIdx, colIdx, values, matrixSize, nonZero, &CSRrowPtrs, &CSRcolIdx, &CSRvalues);
 
-
+#ifdef DEBUG
     cout << "Matrix in CSR format" << endl;
     for (int i = 0; i < matrixSize; i++) {
         for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
             cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
         }
     }
+#endif
 
     // Convert the matrix from CSR to padded CSR format
     int *paddedColIdx;
@@ -270,13 +278,79 @@ int main(int argc, char** argv) {
     int padding;
     convertCSRToPaddedCSR(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, &padding, &paddedColIdx, &paddedValues);
 
+#ifdef DEBUG
     cout << "Matrix in padded CSR format" << endl;
     for ( int i = 0; i < matrixSize; i++ ) {
         for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
             cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
         }
     }
+#endif
 
+
+    // <== KERNEL EXECUTION ==>
+
+    // Awake the GPU before the computations
+    awakeKernel<<<1, 1>>>();
+
+    // <== cuSPARSE TRANSPOSE ==>
+
+    // Create cuda event to register execution time
+    cudaEvent_t cuSparse_Start, cuSparse_Stop;
+
+    cudaEventCreate(&cuSparse_Start);
+    cudaEventCreate(&cuSparse_Stop);
+
+
+
+
+    // Destroy the cuda events
+    cudaEventDestroy(cuSparse_Start);
+    cudaEventDestroy(cuSparse_Stop);
+
+
+    // <== COORDINATE LIST FORMAT (COO) ==>
+
+    // Create cuda event to register execution time
+    cudaEvent_t coo_Start, coo_Stop;
+
+    cudaEventCreate(&coo_Start);
+    cudaEventCreate(&coo_Stop);
+
+
+    // Destroy the cuda events
+    cudaEventDestroy(coo_Start);
+    cudaEventDestroy(coo_Stop);
+
+
+    // <== COMPRESSED SPARSE ROW FORMAT (CSR) ==>
+
+    // Create cuda event to register execution time
+    cudaEvent_t csr_Start, csr_Stop;
+
+    cudaEventCreate(&csr_Start);
+    cudaEventCreate(&csr_Stop);
+
+
+    // Destroy the cuda events
+    cudaEventDestroy(csr_Start);
+    cudaEventDestroy(csr_Stop);
+
+
+    // <== PADDED CSR FORMAT ==>
+
+    // Create cuda event to register execution time
+    cudaEvent_t paddedCSR_Start, paddedCSR_Stop;
+
+    cudaEventCreate(&paddedCSR_Start);
+    cudaEventCreate(&paddedCSR_Stop);
+
+
+    // Destroy the cuda events
+    cudaEventDestroy(paddedCSR_Start);
+    cudaEventDestroy(paddedCSR_Stop);
+
+    // <== TEARDOWN ==>
 
     // Free the memory used by the COO matrix
     cudaFree(rowIdx);
