@@ -435,6 +435,10 @@ int main(int argc, char** argv) {
 
     awakeKernel<<<N_BLOCKS, N_THREADS>>>();
 
+    // Create pointer for tranpose matrix arrays;
+    int *T_rowIdx, *T_colIdx, *T_colPtr;
+    double *T_values;
+
     // <== cuSPARSE TRANSPOSE ==>
 
     // Create cuda event to register execution time
@@ -448,9 +452,6 @@ int main(int argc, char** argv) {
     cusparseCreate(&cusparseHandle);
 
     // Allocate memory for the transposed matrix, that is the same as the matrix in CSC format
-    int *T_colPtr, *T_rowIdx;
-    double *T_values;
-
     cudaMallocManaged(&T_colPtr, (matrixSize + 1) * sizeof(int));
     cudaMallocManaged(&T_rowIdx, nonZero * sizeof(int));
     cudaMallocManaged(&T_values, nonZero * sizeof(double));
@@ -550,9 +551,6 @@ int main(int argc, char** argv) {
     N_THREADS = nonZero < 1024 ? nonZero : 1024;
 
     // Allocate memory for the transposed matrix
-    int *T_rowIdx, *T_colIdx;
-    double *T_values;
-
     cudaMallocManaged(&T_rowIdx, nonZero * sizeof(int));
     cudaMallocManaged(&T_colIdx, nonZero * sizeof(int));
     cudaMallocManaged(&T_values, nonZero * sizeof(double));
@@ -618,9 +616,6 @@ int main(int argc, char** argv) {
     N_THREADS = matrixSize < 1024 ? matrixSize : 1024;
 
     // Allocate memory for the transposed matrix
-    int *T_colPtr, *T_rowIdx;
-    double *T_values;
-
     cudaMallocManaged(&T_colPtr, nonZero * sizeof(int));
     cudaMallocManaged(&T_rowIdx, nonZero * sizeof(int));
     cudaMallocManaged(&T_values, nonZero * sizeof(double));
