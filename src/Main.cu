@@ -48,14 +48,13 @@ __global__ void cooMatrixTranspose(
 }
 
 /**
- * Simple kernel used to tranpose a matrix in CSR form
+ * Simple kernel used to transpose a matrix in CSR form
  * To transpose a matrix in CSR form, the kernel will convert it in CSC form
  *
  * @param rowPtrs - Pointer to the array that will store the offset value of each row for the colIdx array
  * @param colIdx - Pointer to the array that stores the column indexes of the non-zero elements
  * @param values - Pointer to the array that stores the values of the non-zero elements
  * @param matrixSize - Size of the matrix, the matrix is square
- * @param nonZero - Number of non-zero elements
  * @param T_colPtrs - Pointer to the array that will store the offset value of each row for the rowIdx array
  * @param T_rowIdx - Pointer to the array that will store the row indexes of the transposed matrix
  * @param T_values - Pointer to the array that will store
@@ -65,7 +64,6 @@ __global__ void csrMatrixTranspose(
         const int* colIdx,
         const double* values,
         const int matrixSize,
-        const int nonZero,
         int* T_colPtrs,
         int* T_rowIdx,
         double* T_values
@@ -84,19 +82,35 @@ __global__ void csrMatrixTranspose(
 }
 
 
-//__global__ void paddedCSRMatrixTranspose(
-//        const int* rowPtrs,
-//        const int* colIdx,
-//        const double* values,
-//        const int matrixSize,
-//        const int nonZero,
-//        const int padding,
-//        int* T_colPtrs,
-//        int* T_rowIdx,
-//        double* T_values
-//) {
-//
-//}
+/**
+ * Simple kernel used to transpose a matrix in padded CSR form
+ * To transpose a matrix in CSR form, the kernel will convert it in CSC form
+ *
+ * @param colIdx - Pointer to the array that stores the column indexes of the non-zero elements
+ * @param values - Pointer to the array that stores the values of the non-zero elements
+ * @param matrixSize - Size of the matrix, the matrix is square
+ * @param T_rowIdx - Pointer to the array that will store the row indexes of the transposed matrix
+ * @param T_values - Pointer to the array that will store
+ */
+__global__ void paddedCSRMatrixTranspose(
+        const int* colIdx,
+        const double* values,
+        const int matrixSize,
+        const int padding,
+        int* T_rowIdx,
+        double* T_values
+) {
+
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (col < padding) {
+        for (int i = 0; i < matrixSize; i++) {
+            T_rowIdx[i + col * matrixSize] = colIdx[col + padding * i];
+            T_values[i + col * matrixSize] = values[col + padding * i];
+        }
+    }
+}
+
 
 /**
   * Simple kernel used to awake the GPU before the computations
@@ -616,7 +630,7 @@ int main(int argc, char** argv) {
         cudaEventRecord(csrStart);
 
         // Perform the transposition
-        csrMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, nonZero, T_colPtr, T_rowIdx, T_values);
+        csrMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, T_colPtr, T_rowIdx, T_values);
 
         // Stop the timer and calculate the elapsed time
         cudaEventRecord(csrStop);
@@ -648,6 +662,63 @@ int main(int argc, char** argv) {
     cudaEventCreate(&paddedCSRStart);
     cudaEventCreate(&paddedCSRStop);
 
+
+    // Calculate the number of blocks and threads to use
+    // Since the GPU allows a maximum of 1024 threads per block
+    N_BLOCKS = matrixSize;
+    N_THREADS = padding;
+
+    // Allocate memory for the transposed matrix
+    cudaMallocManaged(&T_rowIdx, nonZero * padding * sizeof(int));
+    cudaMallocManaged(&T_values, nonZero * padding * sizeof(double));
+
+    float paddedCSRExecTimes[ITERATIONS];
+
+    cout << "Matrix in padded CSR format" << endl;
+    for ( int i = 0; i < matrixSize; i++ ) {
+        for ( int j = 0; j < padding; j++) {
+            cout << "Row: " << i << " Col: " << paddedColIdx[j] << " Vals: " << paddedValues[j] << endl;
+        }
+    }
+
+    paddedCSRMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(paddedColIdx, paddedValues, matrixSize, padding, T_rowIdx, T_values);
+
+    cudaDeviceSynchronize();
+
+    cout << "Transposed matrix in padded CSR format" << endl;
+    for ( int i = 0; i < matrixSize; i++ ) {
+        for ( int j = 0; j < padding; j++) {
+            cout << "Row: " << T_rowIdx << " Col: " << i << " Vals: " << T_values[j] << endl;
+        }
+    }
+
+
+//    for (int i = 0; i < ITERATIONS; i++) {
+//
+//        float elapsedTime = 0.0f;
+//
+//        // Start the timer
+//        cudaEventRecord(paddedCSRStart);
+//
+//        // Perform the transposition
+//        paddedCSRMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(paddedColIdx, paddedValues, matrixSize, padding, T_rowIdx, T_values);
+//
+//        // Stop the timer and calculate the elapsed time
+//        cudaEventRecord(paddedCSRStop);
+//        cudaEventSynchronize(paddedCSRStop);
+//
+//        cudaEventElapsedTime(&elapsedTime, paddedCSRStart, paddedCSRStop);
+//        paddedCSRExecTimes[i] = elapsedTime;
+//    }
+//
+//    cudaDeviceSynchronize();
+//
+//    cout << "CSR effective bandwidth: " << processExecTimes(csrExecTimes, CSR, nonZero, matrixSize) << " GB/s" << endl;
+
+    // Free
+    cudaFree(T_colPtr);
+    cudaFree(T_rowIdx);
+    cudaFree(T_values);
 
     // Destroy the cuda events
     cudaEventDestroy(paddedCSRStart);
