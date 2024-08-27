@@ -555,39 +555,25 @@ int main(int argc, char** argv) {
     cudaMallocManaged(&T_colIdx, nonZero * sizeof(int));
     cudaMallocManaged(&T_values, nonZero * sizeof(double));
 
-    cooMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(rowIdx, colIdx, values, nonZero, T_rowIdx, T_colIdx, T_values);
-
-    cudaDeviceSynchronize();
-
-    cout << "Matrix in COO format" << endl;
-    for (int i = 0; i < nonZero; i++) {
-        cout << "Row: " << rowIdx[i] << " Col: " << colIdx[i] << " Vals: " << values[i] << endl;
-    }
-
-    cout << "Transposed matrix in COO format" << endl;
-    for (int i = 0; i < nonZero; i++) {
-        cout << "Row: " << T_rowIdx[i] << " Col: " << T_colIdx[i] << " Vals: " << T_values[i] << endl;
-    }
-
     float cooExecTimes[ITERATIONS];
 
-//    for (int i = 0; i < ITERATIONS; i++) {
-//
-//        float elapsedTime = 0.0f;
-//
-//        // Start the timer
-//        cudaEventRecord(cooStart);
-//
-//        // Perform the transposition
-//        cooMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(rowIdx, colIdx, values, nonZero, T_rowIdx, T_colIdx, T_values);
-//
-//        // Stop the timer and calculate the elapsed time
-//        cudaEventRecord(cooStop);
-//        cudaEventSynchronize(cooStop);
-//
-//        cudaEventElapsedTime(&elapsedTime, cooStart, cooStop);
-//        cooExecTimes[i] = elapsedTime;
-//    }
+    for (int i = 0; i < ITERATIONS; i++) {
+
+        float elapsedTime = 0.0f;
+
+        // Start the timer
+        cudaEventRecord(cooStart);
+
+        // Perform the transposition
+        cooMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(rowIdx, colIdx, values, nonZero, T_rowIdx, T_colIdx, T_values);
+
+        // Stop the timer and calculate the elapsed time
+        cudaEventRecord(cooStop);
+        cudaEventSynchronize(cooStop);
+
+        cudaEventElapsedTime(&elapsedTime, cooStart, cooStop);
+        cooExecTimes[i] = elapsedTime;
+    }
 
     cudaDeviceSynchronize();
 
@@ -622,41 +608,23 @@ int main(int argc, char** argv) {
 
     float csrExecTimes[ITERATIONS];
 
-    csrMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, nonZero, T_colPtr, T_rowIdx, T_values);
+    for (int i = 0; i < ITERATIONS; i++) {
 
-    cudaDeviceSynchronize();
+        float elapsedTime = 0.0f;
 
-    cout << "Matrix in CSR format" << endl;
-    for (int i = 0; i < matrixSize; i++) {
-        for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
-            cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
-        }
+        // Start the timer
+        cudaEventRecord(csrStart);
+
+        // Perform the transposition
+        csrMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, nonZero, T_colPtr, T_rowIdx, T_values);
+
+        // Stop the timer and calculate the elapsed time
+        cudaEventRecord(csrStop);
+        cudaEventSynchronize(csrStop);
+
+        cudaEventElapsedTime(&elapsedTime, csrStart, csrStop);
+        csrExecTimes[i] = elapsedTime;
     }
-
-    cout << "Transposed matrix in CSR format" << endl;
-    for (int i = 0; i < matrixSize; i++) {
-        for ( int j = T_colPtr[i]; j < T_colPtr[i + 1]; j++) {
-            cout << "Col: " << i << " Row: " << T_rowIdx[j] << " Vals: " << T_values[j] << endl;
-        }
-    }
-
-//    for (int i = 0; i < ITERATIONS; i++) {
-//
-//        float elapsedTime = 0.0f;
-//
-//        // Start the timer
-//        cudaEventRecord(csrStart);
-//
-//        // Perform the transposition
-//        csrMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, nonZero, T_colPtr, T_rowIdx, T_values);
-//
-//        // Stop the timer and calculate the elapsed time
-//        cudaEventRecord(csrStop);
-//        cudaEventSynchronize(csrStop);
-//
-//        cudaEventElapsedTime(&elapsedTime, csrStart, csrStop);
-//        csrExecTimes[i] = elapsedTime;
-//    }
 
     cudaDeviceSynchronize();
 
