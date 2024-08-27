@@ -276,7 +276,7 @@ float processExecTimes(float* execTimes, OPERATION operation, int nonZero, int m
             effectiveBandwidth = (2 * (rowPtrSize + colIdxSize + valuesSize) / 1024) / (average * 1000);
             break;
         }
-        case: {
+        default: {
             cout << "Invalid operation" << endl;
             return -1;
         }
@@ -433,6 +433,10 @@ int main(int argc, char** argv) {
         cusparseExecTimes[i] = elapsedTime;
     }
 
+    cudaDeviceSynchronize();
+
+    cout << "CuSPARSE effective bandwidth: " << processExecTimes(cusparseExecTimes, CUSPARSE, nonZero, matrixSize) << endl; 
+	
     // Destroy the cuSPARSE handle
     cusparseDestroy(cusparseHandle);
 
