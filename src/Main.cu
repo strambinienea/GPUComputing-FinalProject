@@ -1,3 +1,7 @@
+/**
+ * @Author Enea Strambini
+ */
+
 #include <cstdlib>
 #include <math.h>
 #include <iostream>
@@ -206,28 +210,80 @@ void convertCSRToPaddedCSR(
 
 // <== UTILITY FUNCTIONS ==>
 
+enum OPERATION {
+    COO,
+    CSR,
+    PADDED_CSR,
+    CUSPARSE
+};
+
 /**
   * Process the execution time of each kernel and return the effective bandwidth
+  *
   * @param execTimes - An array of execution times
+  * @param operation - The operation that was performed
+  * @param nonZero - The number of non-zero elements in the matrix
   * @param matrixSize - The size of the matrix
+  * @param padding - The padding used in the padded CSR format
+  *
   * @return effectiveBandwidth - The effective bandwidth, calculated excluding the 5 highest and lowest times
   */
-//float processExecTimes(float* execTimes, int matrixSize) {
-//
-//    // Sort the array
-//    sort(execTimes, execTimes + ITERATIONS);
-//
-//    // Exclude the 5 highest and 5 lowest values from the average
-//    float average = 0.0f;
-//
-//    for (int i = 5; i < ITERATIONS - 5; i++) {
-//        average += execTimes[i];
-//    }
-//    average = average / (ITERATIONS - 10);
-//
-//    float effectiveBandwidth = (2 * matrixSize * matrixSize * sizeof(MATRIX_TYPE) / 1024) / (average * 1000);
-//    return effectiveBandwidth;
-//}
+float processExecTimes(float* execTimes, OPERATION operation, int nonZero, int matrixSize = 0, int padding = 0) {
+
+    // Sort the array
+    sort(execTimes, execTimes + ITERATIONS);
+
+    // Exclude the 5 highest and 5 lowest values from the average
+    float average = 0.0f;
+
+    for (int i = 5; i < ITERATIONS - 5; i++) {
+        average += execTimes[i];
+    }
+    average = average / (ITERATIONS - 10);
+
+    float effectiveBandwidth = 0.0f;
+
+    // Calculate the effective bandwidth in GB/s
+    switch (operation) {
+        case COO: {
+            // The effective bandwidth is found by multiplying the size of an array (nonZero times sizeof(double))
+            // times 3 because it has to modify columns, rows and values arrays.
+            // times 2 because it reads and writes
+            //                        | column and row arrays  |   |     values array      |
+            effectiveBandwidth = (2 * (2 * nonZero * sizeof(int) + nonZero * sizeof(double)) / 1024) / (average * 1000);
+            break;
+        }
+        case CSR:
+        case CUSPARSE: {
+            // RowPtrs is of composed by matrixSize + 1 elements
+            int rowPtrSize = (matrixSize + 1) * sizeof(int);
+
+            // Both colIdx and values are composed by nonZero elements, but they differ in type
+            int colIdxSize = nonZero * sizeof(int);
+            int valuesSize = nonZero * sizeof(double);
+
+            effectiveBandwidth = (2 * (rowPtrSize + colIdxSize + valuesSize) / 1024) / (average * 1000);
+            break;
+        }
+        case PADDED_CSR: {
+            // RowPtrs is of composed by matrixSize + 1 elements
+            int rowPtrSize = (matrixSize + 1) * sizeof(int);
+
+            // Both colIdx and values can be seen as matrices of matrixSize rows and padding columns
+            int colIdxSize = matrixSize * padding * sizeof(int);
+            int valuesSize = matrixSize * padding * sizeof(double);
+
+            effectiveBandwidth = (2 * (rowPtrSize + colIdxSize + valuesSize) / 1024) / (average * 1000);
+            break;
+        }
+        case: {
+            cout << "Invalid operation" << endl;
+            return -1;
+        }
+    }
+
+    return effectiveBandwidth;
+}
 
 int main(int argc, char** argv) {
 
@@ -289,7 +345,6 @@ int main(int argc, char** argv) {
     }
 #endif
 
-
     // <== KERNEL EXECUTION ==>
 
     // Awake the GPU before the computations
@@ -297,31 +352,27 @@ int main(int argc, char** argv) {
 
     // <== cuSPARSE TRANSPOSE ==>
 
+    // Create cuda event to register execution time
+    cudaEvent_t cusparseStart, cusparseStop;
+
+    cudaEventCreate(&cusparseStart);
+    cudaEventCreate(&cusparseStop);
+
+    // Create the cuSPARSE handle used by the library functions
     cusparseHandle_t cusparseHandle;
     cusparseCreate(&cusparseHandle);
-    
-    // Create cuda event to register execution time
-    cudaEvent_t cuSparse_Start, cuSparse_Stop;
 
-    cudaEventCreate(&cuSparse_Start);
-    cudaEventCreate(&cuSparse_Stop);
+    // Allocate memory for the transposed matrix, that is the same as the matrix in CSC format
+    int *T_colPtr, *T_rowIdx;
+    double *T_values;
 
-    cout << "Matrix in CSR format" << endl;
-    for (int i = 0; i < matrixSize; i++) {
-        for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
-            cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
-        }
-    }
+    cudaMallocManaged(&T_colPtr, (matrixSize + 1) * sizeof(int));
+    cudaMallocManaged(&T_rowIdx, nonZero * sizeof(int));
+    cudaMallocManaged(&T_values, nonZero * sizeof(double));
 
-    int *cscColPtr, *cscRowIdx;
-    double *cscValues;
-
-    cudaMallocManaged(&cscColPtr, (matrixSize + 1) * sizeof(int));
-    cudaMallocManaged(&cscRowIdx, nonZero * sizeof(int));
-    cudaMallocManaged(&cscValues, nonZero * sizeof(double));
-
+    // Calculate the buffer size used by cuSPARSE method to perform the transposition
+    // Only done once, since the operation is the same repeated multiple times
     size_t buffSize;
-
     cusparseStatus_t st1 = cusparseCsr2cscEx2_bufferSize(
         cusparseHandle,
         matrixSize,
@@ -330,57 +381,70 @@ int main(int argc, char** argv) {
         CSRvalues,
         CSRrowPtrs,
         CSRcolIdx,
-        cscValues,
-        cscColPtr,
-        cscRowIdx,
+        T_values,
+        T_colPtr,
+        T_rowIdx,
         CUDA_R_64F,	
         CUSPARSE_ACTION_NUMERIC,
         CUSPARSE_INDEX_BASE_ZERO,
         CUSPARSE_CSR2CSC_ALG_DEFAULT,
         &buffSize
     );
-    
+
     cudaDeviceSynchronize();
 
+    // Allocating the buffer
     void *buffer;
     cudaMallocManaged(&buffer, buffSize);
-     
-    cusparseStatus_t status = cusparseCsr2cscEx2(
-        cusparseHandle,
-        matrixSize,
-        matrixSize,
-        nonZero,
-        CSRvalues,
-        CSRrowPtrs,
-        CSRcolIdx,
-        cscValues,
-        cscColPtr,
-        cscRowIdx,
-        CUDA_R_64F,	
-        CUSPARSE_ACTION_NUMERIC,
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUSPARSE_CSR2CSC_ALG_DEFAULT,
-        buffer
-    );
 
-    cudaDeviceSynchronize();
+    float cusparseExecTimes[ITERATIONS];
 
-    cout << "Matrix in CSC format" << endl;
-    for (int i = 0; i < matrixSize; i++) {
-        for ( int j = cscColPtr[i]; j < cscColPtr[i + 1]; j++) {
-            cout << "Col: " << i << " Row: " << cscRowIdx[j] << " Vals: " << cscValues[j] << endl;
-        }
+    for (int i = 0; i < ITERATIONS; i++) {
+
+        float elapsedTime = 0.0f;
+
+        // Start the timer
+        cudaEventRecord(cusparseStart);
+
+        // Perform the transposition
+        cusparseStatus_t status = cusparseCsr2cscEx2(
+                cusparseHandle,
+                matrixSize,
+                matrixSize,
+                nonZero,
+                CSRvalues,
+                CSRrowPtrs,
+                CSRcolIdx,
+                T_values,
+                T_colPtr,
+                T_rowIdx,
+                CUDA_R_64F,
+                CUSPARSE_ACTION_NUMERIC,
+                CUSPARSE_INDEX_BASE_ZERO,
+                CUSPARSE_CSR2CSC_ALG_DEFAULT,
+                buffer
+        );
+
+        // Stop the timer and calculate the elapsed time
+        cudaEventRecord(cusparseStop);
+        cudaEventSynchronize(cusparseStop);
+
+        cudaEventElapsedTime(&elapsedTime, cusparseStart, cusparseStop);
+        cusparseExecTimes[i] = elapsedTime;
     }
+
+    // Destroy the cuSPARSE handle
     cusparseDestroy(cusparseHandle);
 
-    cudaFree(cscColPtr);
-    cudaFree(cscRowIdx);
-    cudaFree(cscValues);
+    // Freeing the memory
+    cudaFree(T_colPtr);
+    cudaFree(T_rowIdx);
+    cudaFree(T_values);
     cudaFree(buffer);
 
     // Destroy the cuda events
-    cudaEventDestroy(cuSparse_Start);
-    cudaEventDestroy(cuSparse_Stop);
+    cudaEventDestroy(cusparseStart);
+    cudaEventDestroy(cusparseStop);
 
 
     // <== COORDINATE LIST FORMAT (COO) ==>
