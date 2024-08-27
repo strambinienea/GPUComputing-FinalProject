@@ -35,7 +35,7 @@ __global__ void cooMatrixTranspose(
         const int nonZero,
         int* T_rowIdx,
         int* T_colIdx,
-        double* T_values,
+        double* T_values
 ) {
 
     int index = blockIdx.x * blockDim.x + threadIdx.x;
