@@ -17,6 +17,88 @@ using namespace std;
 // <== CUDA KERNELS ==>
 
 /**
+ * Simple kernel used to tranpose a matrix in COO form
+ * The kernel simply swaps the row and column arrays, whilst copying the values array
+ *
+ * @param rowIdx - Pointer to the array that stores the row indexes of the non-zero elements
+ * @param colIdx - Pointer to the array that stores the column indexes of the non-zero elements
+ * @param values - Pointer to the array that stores the values of the non-zero elements
+ * @param nonZero - Number of non-zero elements
+ * @param T_rowIdx - Pointer to the array that will store the row indexes of the transposed matrix
+ * @param T_colIdx - Pointer to the array that will store the column indexes of the transposed matrix
+ * @param T_values - Pointer to the array that will store
+ */
+__global__ void cooMatrixTranspose(
+        const int* rowIdx,
+        const int* colIdx,
+        const double* values,
+        const int nonZero,
+        int* T_rowIdx,
+        int* T_colIdx,
+        double* T_values,
+) {
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if ( index < nonZero ) {
+        T_rowIdx[index] = colIdx[index];
+        T_colIdx[index] = rowIdx[index];
+        T_values[index] = values[index];
+    }
+}
+
+/**
+ * Simple kernel used to tranpose a matrix in CSR form
+ * To transpose a matrix in CSR form, the kernel will convert it in CSC form
+ *
+ * @param rowPtrs - Pointer to the array that will store the offset value of each row for the colIdx array
+ * @param colIdx - Pointer to the array that stores the column indexes of the non-zero elements
+ * @param values - Pointer to the array that stores the values of the non-zero elements
+ * @param matrixSize - Size of the matrix, the matrix is square
+ * @param nonZero - Number of non-zero elements
+ * @param T_colPtrs - Pointer to the array that will store the offset value of each row for the rowIdx array
+ * @param T_rowIdx - Pointer to the array that will store the row indexes of the transposed matrix
+ * @param T_values - Pointer to the array that will store
+ */
+__global__ void csrMatrixTranspose(
+        const int* rowPtrs,
+        const int* colIdx,
+        const double* values,
+        const int matrixSize,
+        const int nonZero,
+        int* T_colPtrs,
+        int* T_rowIdx,
+        double* T_values
+) {
+
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < matrixSize) {
+        T_colPtrs[row] = rowPtrs[row];
+
+        for (int i = rowPtrs[row]; i < rowPtrs[row + 1]; i++) {
+            T_rowIdx[i] = colIdx[i];
+            T_values[i] = values[i];
+        }
+    }
+}
+
+
+//__global__ void paddedCSRMatrixTranspose(
+//        const int* rowPtrs,
+//        const int* colIdx,
+//        const double* values,
+//        const int matrixSize,
+//        const int nonZero,
+//        const int padding,
+//        int* T_colPtrs,
+//        int* T_rowIdx,
+//        double* T_values
+//) {
+//
+//}
+
+/**
   * Simple kernel used to awake the GPU before the computations
   */
 __global__ void awakeKernel() { return; }
@@ -348,7 +430,10 @@ int main(int argc, char** argv) {
     // <== KERNEL EXECUTION ==>
 
     // Awake the GPU before the computations
-    awakeKernel<<<1, 1>>>();
+    int N_BLOCKS = 1;
+    int N_THREADS = 1;
+
+    awakeKernel<<<N_BLOCKS, N_THREADS>>>();
 
     // <== cuSPARSE TRANSPOSE ==>
 
@@ -435,7 +520,7 @@ int main(int argc, char** argv) {
 
     cudaDeviceSynchronize();
 
-    cout << "CuSPARSE effective bandwidth: " << processExecTimes(cusparseExecTimes, CUSPARSE, nonZero, matrixSize) << endl; 
+    cout << "CuSPARSE effective bandwidth: " << processExecTimes(cusparseExecTimes, CUSPARSE, nonZero, matrixSize) << " GB/s" << endl;
 	
     // Destroy the cuSPARSE handle
     cusparseDestroy(cusparseHandle);
@@ -454,43 +539,156 @@ int main(int argc, char** argv) {
     // <== COORDINATE LIST FORMAT (COO) ==>
 
     // Create cuda event to register execution time
-    cudaEvent_t coo_Start, coo_Stop;
+    cudaEvent_t cooStart, cooStop;
 
-    cudaEventCreate(&coo_Start);
-    cudaEventCreate(&coo_Stop);
+    cudaEventCreate(&cooStart);
+    cudaEventCreate(&cooStop);
 
+    // Calculate the number of blocks and threads to use
+    // Since the GPU allows a maximum of 1024 threads per block
+    N_BLOCKS = (nonZero / 1024) + 1;
+    N_THREADS = nonZero < 1024 ? nonZero : 1024;
+
+    // Allocate memory for the transposed matrix
+    int *T_rowIdx, *T_colIdx;
+    double *T_values;
+
+    cudaMallocManaged(&T_rowIdx, nonZero * sizeof(int));
+    cudaMallocManaged(&T_colIdx, nonZero * sizeof(int));
+    cudaMallocManaged(&T_values, nonZero * sizeof(double));
+
+    cooMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(rowIdx, colIdx, values, nonZero, T_rowIdx, T_colIdx, T_values);
+
+    cudaDeviceSynchronize();
+
+    cout << "Matrix in COO format" << endl;
+    for (int i = 0; i < nonZero; i++) {
+        cout << "Row: " << rowIdx[i] << " Col: " << colIdx[i] << " Vals: " << values[i] << endl;
+    }
+
+    cout << "Transposed matrix in COO format" << endl;
+    for (int i = 0; i < nonZero; i++) {
+        cout << "Row: " << T_rowIdx[i] << " Col: " << T_colIdx[i] << " Vals: " << T_values[i] << endl;
+    }
+
+    float cooExecTimes[ITERATIONS];
+
+//    for (int i = 0; i < ITERATIONS; i++) {
+//
+//        float elapsedTime = 0.0f;
+//
+//        // Start the timer
+//        cudaEventRecord(cooStart);
+//
+//        // Perform the transposition
+//        cooMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(rowIdx, colIdx, values, nonZero, T_rowIdx, T_colIdx, T_values);
+//
+//        // Stop the timer and calculate the elapsed time
+//        cudaEventRecord(cooStop);
+//        cudaEventSynchronize(cooStop);
+//
+//        cudaEventElapsedTime(&elapsedTime, cooStart, cooStop);
+//        cooExecTimes[i] = elapsedTime;
+//    }
+
+    cudaDeviceSynchronize();
+
+    cout << "COO effective bandwidth: " << processExecTimes(cooExecTimes, COO, nonZero) << " GB/s" << endl;
+
+    cudaFree(T_rowIdx);
+    cudaFree(T_colIdx);
+    cudaFree(T_values);
 
     // Destroy the cuda events
-    cudaEventDestroy(coo_Start);
-    cudaEventDestroy(coo_Stop);
+    cudaEventDestroy(cooStart);
+    cudaEventDestroy(cooStop);
 
 
     // <== COMPRESSED SPARSE ROW FORMAT (CSR) ==>
 
     // Create cuda event to register execution time
-    cudaEvent_t csr_Start, csr_Stop;
+    cudaEvent_t csrStart, csrStop;
 
-    cudaEventCreate(&csr_Start);
-    cudaEventCreate(&csr_Stop);
+    cudaEventCreate(&csrStart);
+    cudaEventCreate(&csrStop);
 
+    // Calculate the number of blocks and threads to use
+    // Since the GPU allows a maximum of 1024 threads per block
+    N_BLOCKS = (matrixSize / 1024) + 1;
+    N_THREADS = matrixSize < 1024 ? matrixSize : 1024;
+
+    // Allocate memory for the transposed matrix
+    int *T_colPtr, *T_rowIdx;
+    double *T_values;
+
+    cudaMallocManaged(&T_colPtr, nonZero * sizeof(int));
+    cudaMallocManaged(&T_rowIdx, nonZero * sizeof(int));
+    cudaMallocManaged(&T_values, nonZero * sizeof(double));
+
+    float csrExecTimes[ITERATIONS];
+
+    csrMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, nonZero, T_colPtr, T_rowIdx, T_values);
+
+    cudaDeviceSynchronize();
+
+    cout << "Matrix in CSR format" << endl;
+    for (int i = 0; i < matrixSize; i++) {
+        for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
+            cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
+        }
+    }
+
+    cout << "Transposed matrix in CSR format" << endl;
+    for (int i = 0; i < matrixSize; i++) {
+        for ( int j = T_colPtr[i]; j < T_colPtr[i + 1]; j++) {
+            cout << "Col: " << i << " Row: " << T_rowIdx[j] << " Vals: " << T_values[j] << endl;
+        }
+    }
+
+//    for (int i = 0; i < ITERATIONS; i++) {
+//
+//        float elapsedTime = 0.0f;
+//
+//        // Start the timer
+//        cudaEventRecord(csrStart);
+//
+//        // Perform the transposition
+//        csrMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(CSRrowPtrs, CSRcolIdx, CSRvalues, matrixSize, nonZero, T_colPtr, T_rowIdx, T_values);
+//
+//        // Stop the timer and calculate the elapsed time
+//        cudaEventRecord(csrStop);
+//        cudaEventSynchronize(csrStop);
+//
+//        cudaEventElapsedTime(&elapsedTime, csrStart, csrStop);
+//        csrExecTimes[i] = elapsedTime;
+//    }
+
+    cudaDeviceSynchronize();
+
+    cout << "CSR effective bandwidth: " << processExecTimes(csrExecTimes, CSR, nonZero, matrixSize) << " GB/s" << endl;
+
+    // Free
+    cudaFree(T_colPtr);
+    cudaFree(T_rowIdx);
+    cudaFree(T_values);
 
     // Destroy the cuda events
-    cudaEventDestroy(csr_Start);
-    cudaEventDestroy(csr_Stop);
+    cudaEventDestroy(csrStart);
+    cudaEventDestroy(csrStop);
 
 
     // <== PADDED CSR FORMAT ==>
 
     // Create cuda event to register execution time
-    cudaEvent_t paddedCSR_Start, paddedCSR_Stop;
+    cudaEvent_t paddedCSRStart, paddedCSRStop;
 
-    cudaEventCreate(&paddedCSR_Start);
-    cudaEventCreate(&paddedCSR_Stop);
+    cudaEventCreate(&paddedCSRStart);
+    cudaEventCreate(&paddedCSRStop);
 
 
     // Destroy the cuda events
-    cudaEventDestroy(paddedCSR_Start);
-    cudaEventDestroy(paddedCSR_Stop);
+    cudaEventDestroy(paddedCSRStart);
+    cudaEventDestroy(paddedCSRStop);
 
     // <== TEARDOWN ==>
 
