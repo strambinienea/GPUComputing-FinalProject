@@ -3,6 +3,7 @@
 #include <iostream>
 #include <mmio.h>
 #include <algorithm>
+#include <cuda_runtime.h>
 #include <cusparse.h>
 
 #define ITERATIONS 100
@@ -14,7 +15,7 @@ using namespace std;
 /**
   * Simple kernel used to awake the GPU before the computations
   */
-__global__ void awakeKernel() { }
+__global__ void awakeKernel() { return; }
 
 /* <=== MATRIX CONVERSION FUNCTIONS ===>*/
 
@@ -113,7 +114,7 @@ void convertMatrixToCSR(
 
     // Allocate memory for the row pointers, column index and values.
     // rowPtrs is of size matrix size
-    cudaMallocManaged(rowPtrs, matrixSize * sizeof(int));
+    cudaMallocManaged(rowPtrs, (matrixSize + 1) * sizeof(int));
     cudaMallocManaged(colIdx, nonZero * sizeof(int));
     cudaMallocManaged(values, nonZero * sizeof(double));
 
@@ -141,6 +142,7 @@ void convertMatrixToCSR(
         // Save the offset in the next element of rowPtrs, first element offset is always zero
         (*rowPtrs)[rowPtr + 1] = offset;
     }
+    (*rowPtrs)[matrixSize] = nonZero;
 }
 
 
@@ -295,14 +297,86 @@ int main(int argc, char** argv) {
 
     // <== cuSPARSE TRANSPOSE ==>
 
+    cusparseHandle_t cusparseHandle;
+    cusparseCreate(&cusparseHandle);
+    
     // Create cuda event to register execution time
     cudaEvent_t cuSparse_Start, cuSparse_Stop;
 
     cudaEventCreate(&cuSparse_Start);
     cudaEventCreate(&cuSparse_Stop);
 
+    cout << "Matrix in CSR format" << endl;
+    for (int i = 0; i < matrixSize; i++) {
+        for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
+            cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
+        }
+    }
 
+    int *cscColPtr, *cscRowIdx;
+    double *cscValues;
 
+    cudaMallocManaged(&cscColPtr, (matrixSize + 1) * sizeof(int));
+    cudaMallocManaged(&cscRowIdx, nonZero * sizeof(int));
+    cudaMallocManaged(&cscValues, nonZero * sizeof(double));
+
+    size_t buffSize;
+
+    cusparseStatus_t st1 = cusparseCsr2cscEx2_bufferSize(
+        cusparseHandle,
+        matrixSize,
+        matrixSize,
+        nonZero,
+        CSRvalues,
+        CSRrowPtrs,
+        CSRcolIdx,
+        cscValues,
+        cscColPtr,
+        cscRowIdx,
+        CUDA_R_64F,	
+        CUSPARSE_ACTION_NUMERIC,
+        CUSPARSE_INDEX_BASE_ZERO,
+        CUSPARSE_CSR2CSC_ALG_DEFAULT,
+        &buffSize
+    );
+    
+    cudaDeviceSynchronize();
+
+    void *buffer;
+    cudaMallocManaged(&buffer, buffSize);
+     
+    cusparseStatus_t status = cusparseCsr2cscEx2(
+        cusparseHandle,
+        matrixSize,
+        matrixSize,
+        nonZero,
+        CSRvalues,
+        CSRrowPtrs,
+        CSRcolIdx,
+        cscValues,
+        cscColPtr,
+        cscRowIdx,
+        CUDA_R_64F,	
+        CUSPARSE_ACTION_NUMERIC,
+        CUSPARSE_INDEX_BASE_ZERO,
+        CUSPARSE_CSR2CSC_ALG_DEFAULT,
+        buffer
+    );
+
+    cudaDeviceSynchronize();
+
+    cout << "Matrix in CSC format" << endl;
+    for (int i = 0; i < matrixSize; i++) {
+        for ( int j = cscColPtr[i]; j < cscColPtr[i + 1]; j++) {
+            cout << "Col: " << i << " Row: " << cscRowIdx[j] << " Vals: " << cscValues[j] << endl;
+        }
+    }
+    cusparseDestroy(cusparseHandle);
+
+    cudaFree(cscColPtr);
+    cudaFree(cscRowIdx);
+    cudaFree(cscValues);
+    cudaFree(buffer);
 
     // Destroy the cuda events
     cudaEventDestroy(cuSparse_Start);
