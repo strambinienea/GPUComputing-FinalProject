@@ -100,15 +100,18 @@ __global__ void paddedCSRMatrixTranspose(
         int* T_rowIdx,
         double* T_values
 ) {
+		
+	T_rowIdx[threadIdx.x + blockIdx.x * blockDim.x] = colIdx[threadIdx.x + blockIdx.x * blockDim.x];
+	T_values[threadIdx.x + blockIdx.x * blockDim.x] = values[threadIdx.x + blockIdx.x * blockDim.x];
 
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+   // int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (col < padding) {
-        for (int i = 0; i < matrixSize; i++) {
-            T_rowIdx[col + padding * i] = colIdx[col + padding * i];
-            T_values[i + col * matrixSize] = values[col + padding * i];
-        }
-    }
+   // if (col < padding) {
+   //     for (int i = 0; i < matrixSize; i++) {
+   //         T_rowIdx[col + padding * i] = colIdx[col + padding * i];
+   //         T_values[i + col * matrixSize] = values[col + padding * i];
+   //     }
+   // }
 }
 
 
@@ -362,14 +365,11 @@ float processExecTimes(float* execTimes, OPERATION operation, int nonZero, int m
             break;
         }
         case PADDED_CSR: {
-            // RowPtrs is of composed by matrixSize + 1 elements
-            int rowPtrSize = (matrixSize + 1) * sizeof(int);
-
             // Both colIdx and values can be seen as matrices of matrixSize rows and padding columns
             int colIdxSize = matrixSize * padding * sizeof(int);
             int valuesSize = matrixSize * padding * sizeof(double);
 
-            effectiveBandwidth = (2 * (rowPtrSize + colIdxSize + valuesSize) / 1024) / (average * 1000);
+            effectiveBandwidth = (2 * (colIdxSize + valuesSize) / 1024) / (average * 1000);
             break;
         }
         default: {
@@ -435,8 +435,8 @@ int main(int argc, char** argv) {
 #ifdef DEBUG
     cout << "Matrix in padded CSR format" << endl;
     for ( int i = 0; i < matrixSize; i++ ) {
-        for ( int j = CSRrowPtrs[i]; j < CSRrowPtrs[i + 1]; j++) {
-            cout << "Row: " << i << " Col: " << CSRcolIdx[j] << " Vals: " << CSRvalues[j] << endl;
+        for ( int j = 0; j < padding; j++) {
+            cout << "Row: " << i << " Col: " << paddedColIdx[j + i * padding] << " Vals: " << paddedValues[j + i * padding] << endl;
         }
     }
 #endif
@@ -694,7 +694,7 @@ int main(int argc, char** argv) {
 
     cudaDeviceSynchronize();
 
-    cout << "CSR effective bandwidth: " << processExecTimes(paddedCSRExecTimes, PADDED_CSR, nonZero, matrixSize, padding) << " GB/s" << endl;
+    cout << "Padded CSR effective bandwidth: " << processExecTimes(paddedCSRExecTimes, PADDED_CSR, nonZero, matrixSize, padding) << " GB/s" << endl;
 
     // Free
     cudaFree(T_colPtr);
