@@ -403,6 +403,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    cout << "FileName: " << argv[1] << endl;
     cout << "Matrix of size: " << matrixSize << " with " << nonZero << " non-zero elements" << endl;
 
 #ifdef DEBUG
