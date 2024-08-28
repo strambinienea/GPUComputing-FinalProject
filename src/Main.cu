@@ -105,7 +105,7 @@ __global__ void paddedCSRMatrixTranspose(
 
     if (col < padding) {
         for (int i = 0; i < matrixSize; i++) {
-            T_rowIdx[i + col * matrixSize] = colIdx[col + padding * i];
+            T_rowIdx[col + padding * i] = colIdx[col + padding * i];
             T_values[i + col * matrixSize] = values[col + padding * i];
         }
     }
@@ -674,46 +674,27 @@ int main(int argc, char** argv) {
 
     float paddedCSRExecTimes[ITERATIONS];
 
-    cout << "Matrix in padded CSR format" << endl;
-    for ( int i = 0; i < matrixSize; i++ ) {
-        for ( int j = 0; j < padding; j++) {
-            cout << "Row: " << i << " Col: " << paddedColIdx[j] << " Vals: " << paddedValues[j] << endl;
-        }
-    }
+    for (int i = 0; i < ITERATIONS; i++) {
 
-    paddedCSRMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(paddedColIdx, paddedValues, matrixSize, padding, T_rowIdx, T_values);
+        float elapsedTime = 0.0f;
+
+        // Start the timer
+        cudaEventRecord(paddedCSRStart);
+
+        // Perform the transposition
+        paddedCSRMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(paddedColIdx, paddedValues, matrixSize, padding, T_rowIdx, T_values);
+
+        // Stop the timer and calculate the elapsed time
+        cudaEventRecord(paddedCSRStop);
+        cudaEventSynchronize(paddedCSRStop);
+
+        cudaEventElapsedTime(&elapsedTime, paddedCSRStart, paddedCSRStop);
+        paddedCSRExecTimes[i] = elapsedTime;
+    }
 
     cudaDeviceSynchronize();
 
-    cout << "Transposed matrix in padded CSR format" << endl;
-    for ( int i = 0; i < matrixSize; i++ ) {
-        for ( int j = 0; j < padding; j++) {
-            cout << "Row: " << T_rowIdx << " Col: " << i << " Vals: " << T_values[j] << endl;
-        }
-    }
-
-
-//    for (int i = 0; i < ITERATIONS; i++) {
-//
-//        float elapsedTime = 0.0f;
-//
-//        // Start the timer
-//        cudaEventRecord(paddedCSRStart);
-//
-//        // Perform the transposition
-//        paddedCSRMatrixTranspose<<<N_BLOCKS, N_THREADS>>>(paddedColIdx, paddedValues, matrixSize, padding, T_rowIdx, T_values);
-//
-//        // Stop the timer and calculate the elapsed time
-//        cudaEventRecord(paddedCSRStop);
-//        cudaEventSynchronize(paddedCSRStop);
-//
-//        cudaEventElapsedTime(&elapsedTime, paddedCSRStart, paddedCSRStop);
-//        paddedCSRExecTimes[i] = elapsedTime;
-//    }
-//
-//    cudaDeviceSynchronize();
-//
-//    cout << "CSR effective bandwidth: " << processExecTimes(csrExecTimes, CSR, nonZero, matrixSize) << " GB/s" << endl;
+    cout << "CSR effective bandwidth: " << processExecTimes(paddedCSRExecTimes, PADDED_CSR, nonZero, matrixSize, padding) << " GB/s" << endl;
 
     // Free
     cudaFree(T_colPtr);
